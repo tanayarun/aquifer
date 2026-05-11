@@ -21,6 +21,20 @@ type Pool[C Conn] struct {
 type Stats struct {
 	Open    int64
 	Idle    int64
-	Inuse   int64
+	InUse   int64
 	Waiters int64
+}
+
+func (p *Pool[C]) dialOne(ctx context.Context) (C, error) {
+	var zero C
+	ctx, cancel := context.WithTimeout(ctx, p.cfg.dialTimeout)
+	defer cancel()
+
+	conn, err := p.dial(ctx)
+	if err != nil {
+		return zero, &DialError{Err: err}
+	}
+	p.open.Add(1)
+
+	return conn, nil
 }
