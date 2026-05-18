@@ -72,3 +72,43 @@ func New[C Conn](dial func(ctx context.Context) (C, error), opts ...Option) (*Po
 
 	return p, nil
 }
+
+func (p *Pool[C]) Acquire(ctx context.Context) (C, error) {
+	var zero C
+
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		return zero, ErrClosed
+	}
+
+	select {
+	case conn := <-p.idle:
+		p.inUse.Add(1)
+		return conn, nil
+	default:
+	}
+
+	if p.open.Load() < int64(p.cfg.maxConns) {
+		c, err := p.dialOne(ctx)
+		if err != nil {
+			return zero, fmt.Errorf("aquifer: dial: %w", err)
+		}
+		p.inUse.Add(1)
+		return c, nil
+	}
+
+	p.waiters.Add(1)
+	defer p.waiters.Add(-1)
+
+	select {
+	case conn := <-p.idle:
+		p.inUse.Add(1)
+		return conn, nil
+	case <-ctx.Done():
+		return zero, ErrExhausted
+	case <-p.done:
+		return zero, ErrClosed
+	}
+}
