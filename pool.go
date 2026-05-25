@@ -112,3 +112,50 @@ func (p *Pool[C]) Acquire(ctx context.Context) (C, error) {
 		return zero, ErrClosed
 	}
 }
+
+func (p *Pool[C]) Release(conn C) {
+	p.inUse.Add(-1)
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		conn.Close()
+		p.open.Add(-1)
+		return
+	}
+
+	select {
+	case p.idle <- conn:
+
+	default:
+		conn.Close()
+		p.open.Add(-1)
+	}
+}
+
+func (p *Pool[C]) Close() {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+
+	p.closed = true
+	close(p.done)
+	p.mu.Unlock()
+
+	for len(p.idle) > 0 {
+		conn := <-p.idle
+		conn.Close()
+		p.open.Add(-1)
+	}
+}
+
+func (p *Pool[C]) Stats() Stats {
+	return Stats{
+		Idle:    int64(len(p.idle)),
+		Open:    p.open.Load(),
+		InUse:   p.inUse.Load(),
+		Waiters: p.waiters.Load(),
+	}
+}
