@@ -19,11 +19,11 @@ func (p *Pool[C]) reaper() {
 func (p *Pool[C]) evictExpired() {
 	n := int64(len(p.idle))
 
-	for i := int64(0); i < n; i++ {
+	for range n {
 		select {
 		case conn := <-p.idle:
 			if conn.isExpired(p.cfg.idleTimeout) && p.open.Load() > int64(p.cfg.minConns) {
-				conn.Close()
+				conn.conn.Close()
 				p.open.Add(-1)
 			} else {
 				p.idle <- conn

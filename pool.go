@@ -37,7 +37,7 @@ func (p *Pool[C]) dialOne(ctx context.Context) (*connWrapper[C], error) {
 	}
 	p.open.Add(1)
 
-	return newConnWrapper[C](conn), nil
+	return newConnWrapper(conn), nil
 }
 
 func New[C Conn](dial func(ctx context.Context) (C, error), opts ...Option) (*Pool[C], error) {
@@ -63,11 +63,15 @@ func New[C Conn](dial func(ctx context.Context) (C, error), opts ...Option) (*Po
 		if err != nil {
 			for len(p.idle) > 0 {
 				c := <-p.idle
-				c.conn.Close()
+				_ = c.conn.Close()
 			}
 			return nil, fmt.Errorf("aquifer: pre-warm failed: %w", err)
 		}
 		p.idle <- conn
+	}
+
+	if cfg.idleTimeout > 0 {
+		go p.reaper()
 	}
 
 	return p, nil
@@ -121,17 +125,17 @@ func (p *Pool[C]) Release(conn C) {
 	closed := p.closed
 	p.mu.Unlock()
 	if closed {
-		conn.Close()
+		_ = conn.Close()
 		p.open.Add(-1)
 		return
 	}
 
-	w := newConnWrapper[C](conn)
+	w := newConnWrapper(conn)
 
 	select {
 	case p.idle <- w:
 	default:
-		conn.Close()
+		_ = conn.Close()
 		p.open.Add(-1)
 	}
 }
@@ -149,7 +153,7 @@ func (p *Pool[C]) Close() {
 
 	for len(p.idle) > 0 {
 		w := <-p.idle
-		w.conn.Close()
+		_ = w.conn.Close()
 		p.open.Add(-1)
 	}
 }
