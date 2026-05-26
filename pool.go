@@ -10,7 +10,7 @@ import (
 type Pool[C Conn] struct {
 	cfg     *config
 	dial    func(ctx context.Context) (C, error)
-	idle    chan C
+	idle    chan *connWrapper[C]
 	open    atomic.Int64
 	inUse   atomic.Int64
 	waiters atomic.Int64
@@ -26,8 +26,8 @@ type Stats struct {
 	Waiters int64
 }
 
-func (p *Pool[C]) dialOne(ctx context.Context) (C, error) {
-	var zero C
+func (p *Pool[C]) dialOne(ctx context.Context) (*connWrapper[C], error) {
+	var zero *connWrapper[C]
 	ctx, cancel := context.WithTimeout(ctx, p.cfg.dialTimeout)
 	defer cancel()
 
@@ -37,7 +37,7 @@ func (p *Pool[C]) dialOne(ctx context.Context) (C, error) {
 	}
 	p.open.Add(1)
 
-	return conn, nil
+	return newConnWrapper[C](conn), nil
 }
 
 func New[C Conn](dial func(ctx context.Context) (C, error), opts ...Option) (*Pool[C], error) {
@@ -52,7 +52,7 @@ func New[C Conn](dial func(ctx context.Context) (C, error), opts ...Option) (*Po
 	p := &Pool[C]{
 		cfg:  cfg,
 		dial: dial,
-		idle: make(chan C, cfg.maxConns),
+		idle: make(chan *connWrapper[C], cfg.maxConns),
 		done: make(chan struct{}),
 	}
 
@@ -63,7 +63,7 @@ func New[C Conn](dial func(ctx context.Context) (C, error), opts ...Option) (*Po
 		if err != nil {
 			for len(p.idle) > 0 {
 				c := <-p.idle
-				c.Close()
+				c.conn.Close()
 			}
 			return nil, fmt.Errorf("aquifer: pre-warm failed: %w", err)
 		}
@@ -84,9 +84,10 @@ func (p *Pool[C]) Acquire(ctx context.Context) (C, error) {
 	}
 
 	select {
-	case conn := <-p.idle:
+	case w := <-p.idle:
 		p.inUse.Add(1)
-		return conn, nil
+		w.markUsed()
+		return w.conn, nil
 	default:
 	}
 
@@ -96,16 +97,17 @@ func (p *Pool[C]) Acquire(ctx context.Context) (C, error) {
 			return zero, fmt.Errorf("aquifer: dial: %w", err)
 		}
 		p.inUse.Add(1)
-		return c, nil
+		return c.conn, nil
 	}
 
 	p.waiters.Add(1)
 	defer p.waiters.Add(-1)
 
 	select {
-	case conn := <-p.idle:
+	case w := <-p.idle:
 		p.inUse.Add(1)
-		return conn, nil
+		w.markUsed()
+		return w.conn, nil
 	case <-ctx.Done():
 		return zero, ErrExhausted
 	case <-p.done:
@@ -124,9 +126,10 @@ func (p *Pool[C]) Release(conn C) {
 		return
 	}
 
-	select {
-	case p.idle <- conn:
+	w := newConnWrapper[C](conn)
 
+	select {
+	case p.idle <- w:
 	default:
 		conn.Close()
 		p.open.Add(-1)
@@ -145,8 +148,8 @@ func (p *Pool[C]) Close() {
 	p.mu.Unlock()
 
 	for len(p.idle) > 0 {
-		conn := <-p.idle
-		conn.Close()
+		w := <-p.idle
+		w.conn.Close()
 		p.open.Add(-1)
 	}
 }

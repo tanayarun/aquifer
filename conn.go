@@ -8,26 +8,26 @@ type Conn interface {
 	Close() error
 }
 
-type connWrapper struct {
-	conn       Conn
+type connWrapper[C Conn] struct {
+	conn       C
 	createdAt  time.Time
 	lastUsedAt time.Time
 	useCount   int64
 }
 
-func newConnWrapper(conn Conn) *connWrapper {
-	return &connWrapper{
+func newConnWrapper[C Conn](conn C) *connWrapper[C] {
+	return &connWrapper[C]{
 		conn:       conn,
 		createdAt:  time.Now(),
 		lastUsedAt: time.Now(),
 	}
 }
 
-func (c *connWrapper) isExpired(idleTimeout time.Duration) bool {
+func (c *connWrapper[C]) isExpired(idleTimeout time.Duration) bool {
 	return time.Since(c.lastUsedAt) > idleTimeout
 }
 
-func (c *connWrapper) markUsed() {
+func (c *connWrapper[C]) markUsed() {
 	c.lastUsedAt = time.Now()
 	c.useCount++
 }
